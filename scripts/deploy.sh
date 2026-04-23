@@ -138,16 +138,9 @@ install_docker_rhel() {
 
   say "🐳 Installing Docker with $PM..."
 
-  # First try packages commonly available in distribution repositories.
-  if run_as_root "$PM" install -y docker docker-compose-plugin; then
-    return 0
-  fi
-
-  if run_as_root "$PM" install -y moby-engine docker-compose-plugin; then
-    return 0
-  fi
-
-  # Then try the official Docker repository through the native package manager.
+  # Docker CE is the most reliable path for RHEL-compatible distributions,
+  # including AlmaLinux and Rocky Linux. The CentOS repository is compatible
+  # with these clones and is the documented upstream repo layout Docker uses.
   if [ "$PM" = "dnf" ]; then
     run_as_root dnf install -y dnf-plugins-core || true
     if command_exists dnf-3; then
@@ -160,7 +153,29 @@ install_docker_rhel() {
     run_as_root yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo || true
   fi
 
-  run_as_root "$PM" install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  if [ "$PM" = "dnf" ]; then
+    if run_as_root dnf install -y --allowerasing docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+      return 0
+    fi
+
+    # Older EL 9 point releases can fail best-candidate resolution for Docker's
+    # repo packages. Retrying with --nobest keeps the install native while still
+    # letting DNF pick a compatible package set.
+    if run_as_root dnf install -y --allowerasing --nobest docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+      return 0
+    fi
+  else
+    if run_as_root yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+      return 0
+    fi
+  fi
+
+  # Fall back to distribution packages only after Docker CE has failed.
+  if run_as_root "$PM" install -y docker docker-compose-plugin; then
+    return 0
+  fi
+
+  run_as_root "$PM" install -y moby-engine docker-compose-plugin
 }
 
 install_docker_arch() {
