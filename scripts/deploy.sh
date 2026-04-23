@@ -115,8 +115,41 @@ detect_os() {
   OS_ID="${ID:-unknown}"
   OS_ID_LIKE="${ID_LIKE:-}"
   OS_NAME="${PRETTY_NAME:-$OS_ID}"
+  OS_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
 
   say "🐧 Detected OS: $OS_NAME"
+}
+
+setup_docker_apt_repo() {
+  if [ -z "$OS_CODENAME" ]; then
+    say_err "⚠️ Could not detect apt repository codename for Docker CE."
+    return 1
+  fi
+
+  case "$OS_ID" in
+    ubuntu|debian)
+      APT_REPO_OS="$OS_ID"
+      ;;
+    *)
+      say_err "⚠️ Docker apt repository is not mapped for OS ID: $OS_ID"
+      return 1
+      ;;
+  esac
+
+  if command_exists dpkg; then
+    APT_ARCH=$(dpkg --print-architecture)
+  else
+    APT_ARCH="amd64"
+  fi
+
+  say "🐳 Configuring Docker apt repository for $APT_REPO_OS $OS_CODENAME..."
+  APT_GPG_FILE="${TMPDIR:-/tmp}/docker.asc.$$"
+  run_as_root install -m 0755 -d /etc/apt/keyrings &&
+    curl -fsSL "https://download.docker.com/linux/$APT_REPO_OS/gpg" -o "$APT_GPG_FILE" &&
+    run_as_root install -m 0644 "$APT_GPG_FILE" /etc/apt/keyrings/docker.asc &&
+    rm -f "$APT_GPG_FILE" &&
+    printf '%s\n' "deb [arch=$APT_ARCH signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$APT_REPO_OS $OS_CODENAME stable" |
+      run_as_root tee /etc/apt/sources.list.d/docker.list >/dev/null
 }
 
 install_docker_apt() {
@@ -124,7 +157,29 @@ install_docker_apt() {
 
   say "🐳 Installing Docker with apt..."
   run_as_root apt-get update &&
-    run_as_root apt-get install -y ca-certificates curl gnupg docker.io docker-compose-plugin
+    run_as_root apt-get install -y ca-certificates curl gnupg
+
+  if setup_docker_apt_repo && run_as_root apt-get update; then
+    if run_as_root apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+      return 0
+    fi
+
+    # Keep Docker Engine installation independent from optional Compose/Buildx
+    # packages. Some older distributions miss newer plugin packages.
+    if run_as_root apt-get install -y docker-ce docker-ce-cli containerd.io; then
+      run_as_root apt-get install -y docker-buildx-plugin docker-compose-plugin || true
+      return 0
+    fi
+  fi
+
+  # Distribution packages are the final native apt fallback.
+  if run_as_root apt-get install -y docker.io; then
+    run_as_root apt-get install -y docker-compose-plugin || true
+    run_as_root apt-get install -y docker-compose || true
+    return 0
+  fi
+
+  return 1
 }
 
 install_docker_rhel() {
@@ -154,28 +209,37 @@ install_docker_rhel() {
   fi
 
   if [ "$PM" = "dnf" ]; then
-    if run_as_root dnf install -y --allowerasing docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+    if run_as_root dnf install -y --allowerasing docker-ce docker-ce-cli containerd.io; then
+      run_as_root dnf install -y --allowerasing docker-buildx-plugin docker-compose-plugin || true
       return 0
     fi
 
     # Older EL 9 point releases can fail best-candidate resolution for Docker's
     # repo packages. Retrying with --nobest keeps the install native while still
     # letting DNF pick a compatible package set.
-    if run_as_root dnf install -y --allowerasing --nobest docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+    if run_as_root dnf install -y --allowerasing --nobest docker-ce docker-ce-cli containerd.io; then
+      run_as_root dnf install -y --allowerasing --nobest docker-buildx-plugin docker-compose-plugin || true
       return 0
     fi
   else
-    if run_as_root yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+    if run_as_root yum install -y docker-ce docker-ce-cli containerd.io; then
+      run_as_root yum install -y docker-buildx-plugin docker-compose-plugin || true
       return 0
     fi
   fi
 
   # Fall back to distribution packages only after Docker CE has failed.
-  if run_as_root "$PM" install -y docker docker-compose-plugin; then
+  if run_as_root "$PM" install -y docker; then
+    run_as_root "$PM" install -y docker-compose-plugin || true
     return 0
   fi
 
-  run_as_root "$PM" install -y moby-engine docker-compose-plugin
+  if run_as_root "$PM" install -y moby-engine; then
+    run_as_root "$PM" install -y docker-compose-plugin || true
+    return 0
+  fi
+
+  return 1
 }
 
 install_docker_arch() {
@@ -283,6 +347,49 @@ ensure_docker_compose() {
   return 1
 }
 
+compose_download_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64)
+      printf '%s\n' "x86_64"
+      ;;
+    aarch64|arm64)
+      printf '%s\n' "aarch64"
+      ;;
+    armv7l|armv7)
+      printf '%s\n' "armv7"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+install_docker_compose_binary() {
+  command_exists curl || return 1
+
+  COMPOSE_ARCH=$(compose_download_arch) || {
+    say_err "⚠️ Unsupported CPU architecture for Docker Compose binary: $(uname -m)"
+    return 1
+  }
+
+  COMPOSE_URL="https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$COMPOSE_ARCH"
+  COMPOSE_TMP="${TMPDIR:-/tmp}/docker-compose.$$"
+
+  say "🐳 Installing Docker Compose standalone binary..."
+  if curl -fsSL "$COMPOSE_URL" -o "$COMPOSE_TMP"; then
+    if run_as_root install -m 0755 "$COMPOSE_TMP" /usr/local/bin/docker-compose; then
+      STATUS=0
+    else
+      STATUS=$?
+    fi
+  else
+    STATUS=$?
+  fi
+
+  rm -f "$COMPOSE_TMP"
+  return "$STATUS"
+}
+
 install_docker_compose_native() {
   detect_os || return 1
 
@@ -291,6 +398,7 @@ install_docker_compose_native() {
   case "$OS_ID $OS_ID_LIKE" in
     *debian*|*ubuntu*)
       command_exists apt-get || return 1
+      setup_docker_apt_repo || true
       run_as_root apt-get update &&
         (run_as_root apt-get install -y docker-compose-plugin ||
           run_as_root apt-get install -y docker-compose)
@@ -349,7 +457,7 @@ install_docker() {
   fi
 
   if ! ensure_docker_compose; then
-    if install_docker_compose_native || install_docker_fallback; then
+    if install_docker_compose_native || install_docker_compose_binary; then
       ensure_docker_compose || {
         say_err "❌ Docker Compose installation completed, but Compose is still unavailable."
         exit 1
