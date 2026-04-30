@@ -1,0 +1,16 @@
+localhost {
+    tls internal
+
+    log {
+        output stdout
+        level INFO
+    }
+
+    encode gzip zstd
+
+    request_body {
+        max_size 2MB
+    }
+
+    reverse_proxy /* AiogramShopBot:5000
+}

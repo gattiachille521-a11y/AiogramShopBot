@@ -93,6 +93,20 @@ async def pick_shipping_option(**kwargs):
     await callback.message.edit_caption(caption=msg, reply_markup=kb_builder.as_markup())
 
 
+async def finalize_order(**kwargs):
+    callback: CallbackQuery = kwargs.get("callback")
+    callback_data: CartCallback = kwargs.get("callback_data")
+    session: AsyncSession = kwargs.get("session")
+    state: FSMContext = kwargs.get("state")
+    language: Language = kwargs.get("language")
+    await callback.message.edit_reply_markup()
+    msg, kb_builder = await CartService.finalize_order(callback, callback_data, state, session, language)
+    if kb_builder:
+        await callback.message.edit_caption(caption=msg, reply_markup=kb_builder.as_markup())
+    else:
+        await callback.message.edit_caption(caption=msg)
+
+
 @cart_router.message(F.text, IsUserExistFilter(), StateFilter(UserStates.coupon,
                                                               UserStates.shipping_address))
 async def receive_purchase_details(message: Message, state: FSMContext, session: AsyncSession, language: Language):
@@ -116,7 +130,8 @@ async def navigate_cart_process(callback: CallbackQuery,
         3: set_coupon,
         4: set_shipping_address,
         5: pick_shipping_option,
-        6: buy_processing
+        6: buy_processing,
+        7: finalize_order
     }
 
     current_level_function = levels[current_level]

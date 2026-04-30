@@ -28,6 +28,7 @@ services:
     ports:
       - "127.0.0.1:5000:5000" # ${WEBAPP_PORT}:${WEBAPP_PORT}
     volumes:
+      - .:/bot
       - ./i18n:/bot/i18n
     command: [ "python", "-u", "run.py" ]
     restart: always

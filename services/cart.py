@@ -249,51 +249,37 @@ class CartService:
                 cart_total_price = cart_total_price - coupon_dto.value
                 cart_total_price = max(cart_total_price, 1)
             discount_amount = cart_total_price_before_discount - cart_total_price
-            cart_content.append(f"\n{get_text(language, BotEntity.USER, "cart_total_price").format(
-                cart_total_price=cart_total_price_before_discount,
-                currency_sym=sym
-            )}")
-            cart_content.append(get_text(language, BotEntity.USER, "cart_total_discount").format(
-                cart_total_discount=discount_amount,
-                currency_sym=sym,
-            ))
-            cart_content.append(get_text(language, BotEntity.USER, "cart_total_with_discount").format(
-                cart_total_final=cart_total_price,
-                currency_sym=sym
-            ))
+            cart_content.append(f"\n{get_text(language, BotEntity.USER, 'cart_total_price').format(cart_total_price=cart_total_price_before_discount, currency_sym=sym)}")
+            cart_content.append(get_text(language, BotEntity.USER, "cart_total_discount").format(cart_total_discount=discount_amount, currency_sym=sym))
+            cart_content.append(get_text(language, BotEntity.USER, "cart_total_with_discount").format(cart_total_final=cart_total_price, currency_sym=sym))
         else:
-            cart_content.append(f"\n{get_text(language, BotEntity.USER, "cart_total_price").format(
-                cart_total_price=cart_total_price,
-                currency_sym=sym
-            )}")
+            cart_content.append(f"\n{get_text(language, BotEntity.USER, 'cart_total_price').format(cart_total_price=cart_total_price, currency_sym=sym)}")
         if shipping_option:
-            cart_content.append(f"\n{get_text(language, BotEntity.USER, "shipping_details").format(
-                shipping_option_name=shipping_option.name,
-                shipping_address=shipping_address
-            )}")
-        cart_content.append(get_text(language, BotEntity.USER, "checkout_cart"))
-        confirm_text = get_text(language, BotEntity.COMMON, "confirm")
+            cart_content.append(f"\n{get_text(language, BotEntity.USER, 'shipping_details').format(shipping_option_name=shipping_option.name, shipping_address=shipping_address)}")
+            
+        cart_content.append("\n<b>Procedere con l'ordine?</b>")
+        
+        kb_builder = InlineKeyboardBuilder()
         if has_physical is False or (
                 has_physical is True and shipping_address is not None and shipping_option is not None):
-            confirm_button = InlineKeyboardButton(text=confirm_text,
-                                                  callback_data=CartCallback.create(
-                                                      level=6,
-                                                      shipping_option_id=callback_data.shipping_option_id,
-                                                      confirmation=True).pack())
+            kb_builder.button(text="✅ Vero (Conferma)",
+                              callback_data=CartCallback.create(
+                                  level=6,
+                                  shipping_option_id=callback_data.shipping_option_id,
+                                  confirmation=True).pack())
         else:
-            confirm_button = InlineKeyboardButton(text=confirm_text,
-                                                  callback_data=CartCallback.create(level=4).pack())
-        kb_builder = InlineKeyboardBuilder()
-        kb_builder.add(confirm_button)
-        kb_builder.button(text=get_text(language, BotEntity.COMMON, "cancel"),
+            kb_builder.button(text="✅ Vero (Conferma)",
+                              callback_data=CartCallback.create(level=4).pack())
+                              
+        kb_builder.button(text="❌ Falso (Annulla)",
                           callback_data=CartCallback.create(level=0))
+                          
         if coupon_id is None:
             kb_builder.row(InlineKeyboardButton(
                 text=get_text(language, BotEntity.COMMON, "coupon"),
-                callback_data=CartCallback.create(level=3,
-                                                  shipping_option_id=callback_data.shipping_option_id).pack()
+                callback_data=CartCallback.create(level=3, shipping_option_id=callback_data.shipping_option_id).pack()
             ))
-        message_text = f"<b>{"\n".join(cart_content)}</b>"
+        message_text = f"<b>{'\n'.join(cart_content)}</b>"
         return message_text, kb_builder
 
     @staticmethod
@@ -337,10 +323,10 @@ class CartService:
                 cart_total_price = cart_total_price - coupon_dto.value
                 cart_total_price = max(cart_total_price, 1)
             total_discount_amount = cart_total_price_before_discount - cart_total_price
-        is_enough_money = (user.top_up_amount - user.consume_records) >= cart_total_price
+            
         kb_builder = InlineKeyboardBuilder()
-        if callback_data.confirmation and len(out_of_stock) == 0 and is_enough_money:
-            msg = get_text(language, BotEntity.USER, "purchase_completed")
+        if callback_data.confirmation and len(out_of_stock) == 0:
+            msg = "✅ Il tuo ordine è stato preso in carico, verrai contattato da un amministratore al più presto."
             buy_dto = BuyDTO(buyer_id=user.id,
                              total_price=cart_total_price,
                              discount=total_discount_amount,
@@ -361,26 +347,20 @@ class CartService:
                     item.is_sold = True
                 await ItemRepository.update(purchased_items, session)
                 await CartItemRepository.remove_from_cart(cart_item.id, session)
+                
             kb_builder.button(
-                text=get_text(language, BotEntity.USER, "purchase_history_item").format(
-                    buy_id=buy_dto.id,
-                    total_price=buy_dto.total_price,
-                    currency_sym=config.CURRENCY.get_localized_symbol()
-                ),
-                callback_data=MyProfileCallback.create(level=4,
-                                                       buy_id=buy_dto.id)
+                text="🔙 Torna al menù principale",
+                callback_data=CartCallback.create(0)
             )
-            user.consume_records = user.consume_records + cart_total_price
-            await UserRepository.update(user, session)
+            
             await session_commit(session)
             await NotificationService.new_buy(buy_dto, user, session)
             return msg, kb_builder
+            
         elif callback_data.confirmation is False:
             kb_builder.row(callback_data.get_back_button(language, 0))
             return get_text(language, BotEntity.USER, "purchase_confirmation_declined"), kb_builder
-        elif is_enough_money is False:
-            kb_builder.row(callback_data.get_back_button(language, 0))
-            return get_text(language, BotEntity.USER, "insufficient_funds"), kb_builder
+            
         elif len(out_of_stock) > 0:
             kb_builder.row(callback_data.get_back_button(language, 0))
             msg = get_text(language, BotEntity.USER, "out_of_stock")
