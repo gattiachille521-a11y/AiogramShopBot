@@ -37,15 +37,8 @@ class SubcategoryService:
                                                                          callback_data.category_id,
                                                                          callback_data.page, session)
         for item in items:
-            available_qty = await ItemRepository.get_available_qty(item_type=item.item_type,
-                                                                   category_id=item.category_id,
-                                                                   subcategory_id=item.subcategory_id,
-                                                                   session=session)
-            kb_builder.button(text=get_text(language, BotEntity.USER, "subcategory_button").format(
-                subcategory_name=item.subcategory_name,
-                subcategory_price=item.price,
-                available_quantity=available_qty,
-                currency_sym=config.CURRENCY.get_localized_symbol()),
+            # Modifica: Tolta l'interrogazione dell'available_qty
+            kb_builder.button(text=f"{item.subcategory_name} - {item.price}{config.CURRENCY.get_localized_symbol()}",
                 callback_data=AllCategoriesCallback.create(
                     level=callback_data.level + 1,
                     item_type=item.item_type,
@@ -91,23 +84,15 @@ class SubcategoryService:
                                                    callback_data.subcategory_id, session)
         subcategory_dto = await SubcategoryRepository.get_by_id(callback_data.subcategory_id, session)
         category_dto = await CategoryRepository.get_by_id(callback_data.category_id, session)
-        available_qty = await ItemRepository.get_available_qty(item_type=callback_data.item_type,
-                                                               category_id=callback_data.category_id,
-                                                               subcategory_id=callback_data.subcategory_id,
-                                                               session=session)
+        
         if callback_data.item_type:
             item_type = callback_data.item_type.get_localized(language)
         else:
             item_type = get_text(language, BotEntity.COMMON, "all")
-        caption = get_text(language, BotEntity.USER, "select_quantity").format(
-            item_type=item_type,
-            category_name=category_dto.name,
-            subcategory_name=subcategory_dto.name,
-            price=item_dto.price,
-            description=item_dto.description,
-            quantity=available_qty,
-            currency_sym=config.CURRENCY.get_localized_symbol()
-        )
+            
+        # Modifica: Testo formattato staticamente per omettere la quantità disponibile
+        caption = f"Seleziona la quantità per:\n<b>{category_dto.name} - {subcategory_dto.name}</b>\n\nPrezzo: {item_dto.price}{config.CURRENCY.get_localized_symbol()}\n{item_dto.description}"
+        
         kb_builder = InlineKeyboardBuilder()
         for i in range(1, 11):
             kb_builder.button(text=str(i), callback_data=AllCategoriesCallback.create(

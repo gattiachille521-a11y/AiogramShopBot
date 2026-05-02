@@ -59,13 +59,8 @@ class CartService:
         )
         current_cart_content = await CartItemRepository.get_current_cart_content(cart_item, cart, session)
         if current_cart_content:
-            available_qty = await ItemRepository.get_available_qty(callback_data.item_type,
-                                                                   cart_item.category_id,
-                                                                   cart_item.subcategory_id,
-                                                                   session)
+            # Modifica: rimosso il blocco quantity vs available_qty
             current_cart_content.quantity = current_cart_content.quantity + cart_item.quantity
-            if current_cart_content.quantity > available_qty:
-                current_cart_content.quantity = available_qty
             await CartItemRepository.update(current_cart_content, session)
         else:
             await CartItemRepository.create(cart_item, session)
@@ -100,7 +95,7 @@ class CartService:
             availability = availability_map.get(
                 (cart_item.item_type, cart_item.category_id, cart_item.subcategory_id)
             )
-            is_available = availability is not None and availability.available_qty > 0
+            is_available = availability is not None
             if is_available:
                 filtered_cart_items.append(cart_item)
             else:
@@ -190,7 +185,7 @@ class CartService:
                                   state: FSMContext,
                                   session: AsyncSession | Session,
                                   language: Language) -> tuple[str, InlineKeyboardBuilder]:
-        user = await UserRepository.get_by_tgid(callback.from_user.id, session)
+        user = await UserRepository.get_by_tgid(callback.fromuser.id, session)
         cart_items = await CartItemRepository.get_all_by_user_id(user.id, session)
         availability_map = await CartService._get_cart_availability_map(cart_items, session)
         cart_items_dict = {}
@@ -304,9 +299,8 @@ class CartService:
                 out_of_stock.append(cart_item)
                 continue
             cart_total_price += availability.price * cart_item.quantity
-            is_in_stock = availability.available_qty >= cart_item.quantity
-            if is_in_stock is False:
-                out_of_stock.append(cart_item)
+            # Modifica: Non controlliamo più is_in_stock
+            
         total_discount_amount = 0
         state_data = await state.get_data()
         coupon_id = state_data.get('coupon_id')
@@ -336,16 +330,17 @@ class CartService:
                              status=BuyStatus.PAID if shipping_option else BuyStatus.COMPLETED)
             buy_dto = await BuyRepository.create(buy_dto, session)
             for cart_item in cart_items:
+                # Modifica importante: passiamo solo 1 come quantity e NON settiamo is_sold = True
                 purchased_items = await ItemRepository.get_purchased_items(cart_item.item_type,
                                                                            cart_item.category_id,
-                                                                           cart_item.subcategory_id, cart_item.quantity,
+                                                                           cart_item.subcategory_id, 1,
                                                                            session)
                 item_ids = [item.id for item in purchased_items]
                 buy_item_dto = BuyItemDTO(buy_id=buy_dto.id, item_ids=item_ids)
                 await BuyItemRepository.create_single(buy_item_dto, session)
-                for item in purchased_items:
-                    item.is_sold = True
-                await ItemRepository.update(purchased_items, session)
+                
+                # CANCELLATO il ciclo for item in purchased_items: item.is_sold = True
+                
                 await CartItemRepository.remove_from_cart(cart_item.id, session)
                 
             kb_builder.button(
@@ -384,28 +379,23 @@ class CartService:
         availability = availability_map.get(
             (cart_item_dto.item_type, cart_item_dto.category_id, cart_item_dto.subcategory_id)
         )
-        available_qty = availability.available_qty if availability else 0
+        
         if callback_data.cart_action == CartAction.REMOVE_ALL or cart_item_dto.quantity == 0:
             return await CartService.delete_cart_item(callback_data, session, language)
         elif callback_data.cart_action in [CartAction.PLUS_ONE, CartAction.MINUS_ONE]:
             cart_item_dto.quantity += callback_data.cart_action.value
-            if cart_item_dto.quantity > available_qty:
-                cart_item_dto.quantity = available_qty
-            elif cart_item_dto.quantity == 0:
+            if cart_item_dto.quantity == 0:
                 return await CartService.delete_cart_item(callback_data, session, language)
             await CartItemRepository.update(cart_item_dto, session)
             await session_commit(session)
-        elif callback_data.cart_action == CartAction.MAX:
-            cart_item_dto.quantity = available_qty
-            await CartItemRepository.update(cart_item_dto, session)
-            await session_commit(session)
+
         item_dto = availability
         category = await CategoryRepository.get_by_id(cart_item_dto.category_id, session)
         subcategory = await SubcategoryRepository.get_by_id(cart_item_dto.subcategory_id, session)
-        cart_actions = [CartAction.REMOVE_ALL, CartAction.MINUS_ONE, CartAction.PLUS_ONE, CartAction.MAX]
-        if cart_item_dto.quantity == available_qty:
-            cart_actions.remove(CartAction.PLUS_ONE)
-            cart_actions.remove(CartAction.MAX)
+        
+        # Modifica: Rimosso CartAction.MAX per prodotti infiniti
+        cart_actions = [CartAction.REMOVE_ALL, CartAction.MINUS_ONE, CartAction.PLUS_ONE]
+        
         kb_builder = InlineKeyboardBuilder()
         for cart_action in cart_actions:
             kb_builder.button(
@@ -413,17 +403,15 @@ class CartService:
                 callback_data=callback_data.model_copy(update={'cart_action': cart_action})
             )
         kb_builder.row(callback_data.get_back_button(language, 0))
-        return get_text(language, BotEntity.USER, "cart_item_preview").format(
-            item_type=item_dto.item_type.get_localized(language),
-            category_name=category.name,
-            subcategory_name=subcategory.name,
-            price=item_dto.price,
-            currency_sym=config.CURRENCY.get_localized_symbol(),
-            description=item_dto.description,
-            available_qty=available_qty,
-            qty=cart_item_dto.quantity,
-            total_price=cart_item_dto.quantity * item_dto.price
-        ), kb_builder
+        
+        # Modifica: Tolta la riga "available_qty" dal messaggio visibile
+        caption = f"Articolo: <b>{category.name} - {subcategory.name}</b>\n\n"
+        caption += f"Quantità nel carrello: <b>{cart_item_dto.quantity}</b>\n"
+        caption += f"Prezzo unitario: {item_dto.price}{config.CURRENCY.get_localized_symbol()}\n"
+        caption += f"Totale: <b>{cart_item_dto.quantity * item_dto.price}{config.CURRENCY.get_localized_symbol()}</b>\n\n"
+        caption += f"<i>{item_dto.description}</i>"
+        
+        return caption, kb_builder
 
     @staticmethod
     async def set_coupon(callback_data: CartCallback, state: FSMContext, language: Language):
